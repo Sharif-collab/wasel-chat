@@ -1,1 +1,1 @@
-web: gunicorn wasel_chat_STAGE40_HOME_LIKE_IMAGE:app
+web: gunicorn wasel_chat_STAGE45_EMAIL_DELIVERY_FIXED:app
