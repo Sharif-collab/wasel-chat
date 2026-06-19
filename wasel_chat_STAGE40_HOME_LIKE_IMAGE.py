@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-واصل شات - المرحلة 35 - إصلاح حفظ تفاعلات الحالات نهائياً
+واصل شات - المرحلة 44 - تحقق بريد حقيقي Gmail داخل نفس الملف
 تشغيل في Termux:
     pip install flask werkzeug
-    python wasel_chat_STAGE35_STATUS_REACTION_DB_FIXED.py
+    python wasel_chat_STAGE44_REAL_EMAIL_VERIFY_GMAIL_INSIDE.py
 ثم افتح:
     http://127.0.0.1:5000
 """
@@ -18,6 +18,7 @@ import secrets
 import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
+from email.utils import formataddr, formatdate, make_msgid
 escape = html.escape
 from datetime import datetime, date, timedelta
 from functools import wraps
@@ -62,9 +63,11 @@ LOGIN_ATTEMPTS = {}
 
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "smtp.gmail.com")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587") or 587)
-EMAIL_USER = os.environ.get("EMAIL_USER", "")
-EMAIL_PASS = os.environ.get("EMAIL_PASS", "")
-EMAIL_FROM = os.environ.get("EMAIL_FROM", APP_NAME)
+# إعدادات إرسال رمز التحقق الحقيقي من Gmail داخل نفس الملف
+# يمكن تغييرها لاحقاً من متغيرات البيئة بدون تعديل الملف
+EMAIL_USER = os.environ.get("EMAIL_USER", "mjbbdalhafz6@gmail.com")
+EMAIL_PASS = os.environ.get("EMAIL_PASS", "qdjy dfss tbol aunp")
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "واصل شات")
 
 ALLOWED_EXT = {"png", "jpg", "jpeg", "gif", "webp", "mp4", "webm", "mp3", "wav", "ogg", "pdf", "doc", "docx", "txt", "zip"}
 
@@ -509,17 +512,36 @@ def send_mail(to_email, subject, body):
     if not smtp_ready():
         return False, "SMTP غير مضبوط"
     try:
+        # تنظيف بريد المستلم حتى لا تفشل الرسالة بسبب مسافة أو حرف مخفي
+        to_email = (to_email or "").strip().lower()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to_email):
+            return False, "بريد المستلم غير صحيح"
+
         msg = MIMEText(body, "plain", "utf-8")
         msg["Subject"] = Header(subject, "utf-8")
-        msg["From"] = str(Header(EMAIL_FROM, "utf-8")) + f" <{EMAIL_USER}>"
+        # صيغة From آمنة أكثر للتسليم من Gmail وتقلل دخول الرسالة في الرسائل المرفوضة/Spam
+        msg["From"] = formataddr((str(Header(EMAIL_FROM or "Wasel Chat", "utf-8")), EMAIL_USER))
         msg["To"] = to_email
-        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=20) as server:
+        msg["Reply-To"] = EMAIL_USER
+        msg["Date"] = formatdate(localtime=True)
+        msg["Message-ID"] = make_msgid(domain="gmail.com")
+
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=30) as server:
+            server.ehlo()
             server.starttls()
+            server.ehlo()
             server.login(EMAIL_USER, EMAIL_PASS)
-            server.sendmail(EMAIL_USER, [to_email], msg.as_string())
-        return True, "تم الإرسال"
+            refused = server.sendmail(EMAIL_USER, [to_email], msg.as_string())
+
+        # مهم: أحياناً الدالة السابقة كانت تعتبر الإرسال ناجح حتى لو رفض Gmail المستلم
+        if refused:
+            print("EMAIL_REFUSED:", refused)
+            return False, "رفض Gmail بريد المستلم"
+
+        print("EMAIL_ACCEPTED_TO:", to_email)
+        return True, "تم قبول الرسالة من Gmail"
     except Exception as e:
-        print("EMAIL_SEND_ERROR:", e)
+        print("EMAIL_SEND_ERROR:", repr(e))
         return False, str(e)
 
 
@@ -531,10 +553,15 @@ def create_email_verify_code(user_id, email):
     db().commit()
     body = f"""مرحباً بك في واصل شات
 
-رمز التحقق من البريد هو: {code}
+رمز التحقق الخاص بك هو:
+{code}
 
-الرمز صالح لمدة 10 دقائق.
-إذا لم تطلب إنشاء حساب في واصل شات فتجاهل هذه الرسالة.
+الرمز صالح لمدة 10 دقائق فقط.
+لا تشارك الرمز مع أي شخص.
+
+إذا لم تطلب إنشاء حساب في واصل شات، تجاهل هذه الرسالة.
+
+فريق واصل شات
 """
     ok, info = send_mail(email, "رمز تحقق واصل شات", body)
     return code, ok, info
@@ -1190,9 +1217,12 @@ def register():
             session.clear(); session['_csrf_token'] = secrets.token_urlsafe(32)
             session['pending_verify_user_id'] = uid
             session['pending_verify_email'] = email
-            if not ok:
-                session['dev_verify_code'] = code
-                print('رمز تحقق البريد للتجربة:', code, 'سبب عدم الإرسال:', info)
+            if ok:
+                session['verify_flash'] = 'تم إرسال رمز التحقق إلى بريدك الإلكتروني.'
+                session.pop('verify_error', None)
+            else:
+                session['verify_error'] = 'تعذر إرسال رمز التحقق الآن. تأكد من اتصال الإنترنت أو اضغط إعادة إرسال.'
+                print('EMAIL_VERIFY_SEND_ERROR:', info)
             return auth_success('/verify_email')
         except sqlite3.IntegrityError:
             return auth_fail('register', 'البريد أو الرقم مستخدم من قبل', 'email')
@@ -1218,9 +1248,12 @@ def login():
                 session.clear(); session['_csrf_token'] = secrets.token_urlsafe(32)
                 session['pending_verify_user_id'] = u['id']
                 session['pending_verify_email'] = u['email']
-                if not ok:
-                    session['dev_verify_code'] = code
-                    print('رمز تحقق البريد للتجربة:', code, 'سبب عدم الإرسال:', info)
+                if ok:
+                    session['verify_flash'] = 'تم إرسال رمز تحقق جديد إلى بريدك الإلكتروني.'
+                    session.pop('verify_error', None)
+                else:
+                    session['verify_error'] = 'تعذر إرسال رمز التحقق الآن. اضغط إعادة إرسال بعد لحظات.'
+                    print('EMAIL_VERIFY_SEND_ERROR:', info)
                 return auth_success('/verify_email')
             LOGIN_ATTEMPTS.pop(ip, None)
             session.clear(); session['_csrf_token'] = secrets.token_urlsafe(32)
@@ -1258,8 +1291,13 @@ def verify_email():
             session.clear(); session['_csrf_token'] = secrets.token_urlsafe(32)
             session['user_id'] = uid
             return redirect('/chats')
-    dev = session.get('dev_verify_code')
-    dev_box = f"<div class='card'><b>رمز التجربة:</b> <span class='badge'>{h(dev)}</span><br><span class='muted'>ظهر لأن SMTP غير مضبوط أو فشل الإرسال. عند ضبط EMAIL_USER و EMAIL_PASS سيصل الرمز للبريد.</span></div>" if dev else ''
+    flash = session.pop('verify_flash', '')
+    send_error = session.pop('verify_error', '')
+    info_box = ''
+    if flash:
+        info_box = f"<div class='card' style='border-color:#22c55e;color:#bbf7d0'>✅ {h(flash)}</div>"
+    if send_error:
+        info_box = f"<div class='card' style='border-color:#ef4444;color:#fecaca'>⚠️ {h(send_error)}</div>"
     email = h(u['email'])
     return page(f"""
     <div class='top'><a class='icon' href='/login'>‹</a><b>تحقق البريد</b></div>
@@ -1270,7 +1308,7 @@ def verify_email():
       <button class='btn' style='width:100%'>تأكيد وتسجيل الدخول</button>
     </form>
     <div class='card'><a class='btn gray' href='/resend_verify_email'>إعادة إرسال الرمز</a></div>
-    {dev_box}
+    {info_box}
     """)
 
 
@@ -1283,11 +1321,12 @@ def resend_verify_email():
     if not u or not u['email']:
         return redirect('/login')
     code, ok, info = create_email_verify_code(uid, u['email'])
-    if not ok:
-        session['dev_verify_code'] = code
-        print('رمز تحقق البريد للتجربة:', code, 'سبب عدم الإرسال:', info)
+    if ok:
+        session['verify_flash'] = 'تم إرسال رمز تحقق جديد إلى بريدك الإلكتروني.'
+        session.pop('verify_error', None)
     else:
-        session.pop('dev_verify_code', None)
+        session['verify_error'] = 'تعذر إرسال رمز التحقق. تأكد من الإنترنت ثم جرّب إعادة الإرسال.'
+        print('EMAIL_VERIFY_SEND_ERROR:', info)
     return redirect('/verify_email')
 
 
@@ -1492,14 +1531,31 @@ def is_my_contact(user_id, other_id):
 
 
 def can_view_status(st, viewer_id):
-    if st['user_id'] == viewer_id:
+    """
+    خصوصية الحالات - مرحلة 45:
+    - المستخدم الجديد لا يرى أي حالات عشوائية.
+    - يرى حالته هو فقط دائماً.
+    - يرى حالة الشخص الآخر فقط بعد إضافته كجهة اتصال/محادثة، إذا كانت الحالة لم تنتهِ.
+    - حالة private لا تظهر إلا لصاحبها.
+    - حالة contacts تظهر إذا كان بينهما حفظ جهة اتصال من أحد الطرفين.
+    - حالة public لم تعد عامة لكل مستخدمي المنصة؛ تظهر فقط لمن أضاف صاحب الحالة عنده.
+    """
+    owner_id = st['user_id']
+    if owner_id == viewer_id:
         return True
+
     privacy = st['privacy'] if 'privacy' in st.keys() and st['privacy'] else 'public'
     if privacy == 'private':
         return False
+
+    viewer_saved_owner = is_my_contact(viewer_id, owner_id)
+    owner_saved_viewer = is_my_contact(owner_id, viewer_id)
+
     if privacy == 'contacts':
-        return is_my_contact(st['user_id'], viewer_id) or is_my_contact(viewer_id, st['user_id'])
-    return True
+        return viewer_saved_owner or owner_saved_viewer
+
+    # public هنا معناها: تظهر لمن أضاف صاحب الحالة، وليس لكل المستخدمين الجدد.
+    return viewer_saved_owner
 
 
 def status_media_html(st, preview=False):
