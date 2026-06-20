@@ -1,1 +1,1 @@
-web: gunicorn wasel_chat_STAGE39_CHAT_DESIGN_CLEAN:app
+web: gunicorn wasel_chat_STAGE44_REAL_EMAIL_VERIFY_GMAIL_INSIDE:app
