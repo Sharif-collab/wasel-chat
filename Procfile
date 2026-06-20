@@ -1,1 +1,1 @@
-web: gunicorn wasel_chat_STAGE45_EMAIL_DELIVERY_FIXED:app
+web: gunicorn wasel_chat_STAGE44_REAL_EMAIL_VERIFY_GMAIL_INSIDE.py
