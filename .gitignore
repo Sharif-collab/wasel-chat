@@ -1,9 +1,0 @@
-*.pyc
-__pycache__/
-*.db
-.wasel_secret_key
-*.log
-venv/
-.env
-.DS_Store
-uploads/
